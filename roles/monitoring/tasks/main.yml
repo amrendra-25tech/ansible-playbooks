@@ -250,6 +250,39 @@
     mode: '0644'
   notify: Restart Alertmanager
 
+- name: Create Alertmanager dynamic clustering wrapper script
+  copy:
+    content: |
+      #!/bin/bash
+      # Retrieve local instance information
+      MY_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+      REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+      
+      # Discover other monitoring instances
+      PEERS=""
+      PEER_IPS=$(aws ec2 describe-instances \
+        --region "$REGION" \
+        --filters "Name=tag:Role,Values=Monitoring" "Name=instance-state-name,Values=running" \
+        --query "Reservations[*].Instances[*].PrivateIpAddress" \
+        --output text)
+      
+      for ip in $PEER_IPS; do
+        if [ "$ip" != "$MY_IP" ] && [ ! -z "$ip" ]; then
+          PEERS="$PEERS --cluster.peer=$ip:9094"
+        fi
+      done
+      
+      # Start alertmanager with peer flags
+      exec /usr/local/bin/alertmanager \
+        --config.file=/etc/alertmanager/alertmanager.yml \
+        --storage.path=/var/lib/alertmanager/ \
+        --cluster.listen-address=0.0.0.0:9094 \
+        $PEERS
+    dest: /usr/local/bin/run_alertmanager.sh
+    owner: prometheus
+    group: prometheus
+    mode: '0755'
+
 - name: Template Alertmanager systemd unit file
   template:
     src: alertmanager.service.j2
